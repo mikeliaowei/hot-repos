@@ -1,0 +1,19 @@
+[project]
+name = "hot-repos"
+version = "0.1.0"
+description = "Find the GitHub repos gaining stars fastest, for people and agents"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.3,<3"]
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.67", "pandas>=2"]
+
+[project.scripts]
+hotrepos = "hotrepos.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["hotrepos"]
