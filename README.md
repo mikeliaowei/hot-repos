@@ -119,6 +119,10 @@ claude mcp add hot-repos --scope user -- ~/Dev/hot-repos/.venv/bin/hotrepos serv
 .venv/bin/python -m unittest discover -s tests -t .
 ```
 
+## License
+
+[MIT](LICENSE)
+
 ## Not built yet
 
 Hacker News and Reddit mentions, fake-star detection, LLM summaries and "why it's hot", personal interests and
