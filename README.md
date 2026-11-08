@@ -59,21 +59,6 @@ before). An expired token shows `GitHub rejected GITHUB_TOKEN`. Create a new one
 "GitHub token: not set". Stop it (Ctrl+C) and run `hotrepos ui` again from a terminal that has the token.
 The MCP server only reads the local database, so it doesn't need the token.
 
-### Troubleshooting
-
-| Message | Fix |
-|---|---|
-| `GitHub rejected GITHUB_TOKEN (401 Bad credentials)` | The token was copied incompletely or has expired. Copy it again, or create a new one. |
-| `GitHub API 403 on .../stargazers: Resource not accessible by personal access token` | Edit the token: set Repository access to **Public repositories**, or use a classic token with no scopes. |
-| `GitHub API 403 ...: ...SAML enforcement...` | That organization requires SSO: on the token's page, choose **Configure SSO** and authorize it. |
-| `GitHub secondary rate limit: wait N seconds` | GitHub asked for a pause. Run again after the wait. |
-| `GitHub rate limit reached` | Out of requests for this hour. Without a token that's 60; set one for 5,000. |
-| `Port 8501 is in use` | The UI is already running at http://127.0.0.1:8501. Use it, stop it, or pass `--port 8502`. |
-| UI says "GitHub token: not set" | Restart the UI from a terminal where `echo ${#GITHUB_TOKEN}` prints more than 0. |
-
-When GitHub refuses the stargazer list for any other reason, `measure` prints GitHub's message once and
-carries on with star-count snapshots, so a run still produces data.
-
 ## Scheduled updates
 
 Run `update` hourly or daily from cron. Cron doesn't read `~/.zshrc`, so load it explicitly:
@@ -112,6 +97,21 @@ A Streamlit page with Trending and Breakouts tabs, filters for window, language 
 ```bash
 claude mcp add hot-repos --scope user -- ~/Dev/hot-repos/.venv/bin/hotrepos serve
 ```
+
+## Troubleshooting
+
+| Message | Fix |
+|---|---|
+| `GitHub rejected GITHUB_TOKEN (401 Bad credentials)` | The token was copied incompletely or has expired. Copy it again, or create a new one. |
+| `GitHub API 403 on .../stargazers: Resource not accessible by personal access token` | Edit the token: set Repository access to **Public repositories**, or use a classic token with no scopes. |
+| `GitHub API 403 ...: ...SAML enforcement...` | That organization requires SSO: on the token's page, choose **Configure SSO** and authorize it. |
+| `GitHub secondary rate limit: wait N seconds` | GitHub asked for a pause. Run again after the wait. |
+| `GitHub rate limit reached` | Out of requests for this hour. Without a token that's 60; set one for 5,000. |
+| `Port 8501 is in use` | The UI is already running at http://127.0.0.1:8501. Use it, stop it, or pass `--port 8502`. |
+| UI says "GitHub token: not set" | Restart the UI from a terminal where `echo ${#GITHUB_TOKEN}` prints more than 0. |
+
+When GitHub refuses the stargazer list for any other reason, `measure` prints GitHub's message once and
+carries on with star-count snapshots, so a run still produces data.
 
 ## Tests
 
