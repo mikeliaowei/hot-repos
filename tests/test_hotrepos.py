@@ -32,7 +32,33 @@ def add_measured(conn, name, per_day, days=14):
                  (name, NOW.isoformat(), db.hour_key(NOW - timedelta(days=days))))
 
 
-class GHArchiveTest(unittest.TestCase):
+class DBTest(unittest.TestCase):
+    def test_hour_key_and_parse_hour(self):
+        dt = datetime(2026, 11, 5, 14, 30, tzinfo=timezone.utc)
+        key = db.hour_key(dt)
+        self.assertEqual(key, '2026-11-05T14')
+        self.assertEqual(db.parse_hour(key), datetime(2026, 11, 5, 14, tzinfo=timezone.utc))
+
+    def test_hours_back(self):
+        now = datetime(2026, 11, 5, 15, 30, tzinfo=timezone.utc)
+        hours = db.hours_back(now, 3)
+        self.assertEqual(len(hours), 3)
+        self.assertEqual(hours[0], datetime(2026, 11, 5, 14, tzinfo=timezone.utc))
+        self.assertEqual(hours[2], datetime(2026, 11, 5, 12, tzinfo=timezone.utc))
+
+    def test_upsert_repo(self):
+        conn = db.connect(':memory:')
+        r = repo('a/x', 10, topics='t1,t2')
+        db.upsert_repo(conn, r)
+        row = conn.execute('SELECT * FROM repos WHERE name = ?', ('a/x',)).fetchone()
+        self.assertEqual(row['stars'], 10)
+        self.assertEqual(row['topics'], 't1,t2')
+        # Update
+        r['stars'] = 20
+        db.upsert_repo(conn, r)
+        row = conn.execute('SELECT * FROM repos WHERE name = ?', ('a/x',)).fetchone()
+        self.assertEqual(row['stars'], 20)
+
     def test_counts_stars_and_forks_per_repo(self):
         lines = [event('WatchEvent', 'a/x'), event('WatchEvent', 'a/x'), event('ForkEvent', 'a/x'),
                  event('WatchEvent', 'b/y'), event('PushEvent', 'b/y'), '',
@@ -106,6 +132,63 @@ class FakeClient:
         return [{'starred_at': t.isoformat().replace('+00:00', 'Z')} for t in chunk]
 
 
+class GitHubClientTest(unittest.TestCase):
+    def test_get_success(self):
+        def opener(req, timeout):
+            return io.BytesIO(json.dumps({'foo': 'bar'}).encode())
+        client = github.Client(token='t', opener=opener)
+        self.assertEqual(client.get('/path'), {'foo': 'bar'})
+
+    def test_get_404(self):
+        def opener(req, timeout):
+            raise github.urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
+        client = github.Client(token='t', opener=opener)
+        self.assertIsNone(client.get('/path'))
+
+    def test_get_rate_limited(self):
+        def opener(req, timeout):
+            headers = {'X-RateLimit-Remaining': '0', 'X-RateLimit-Reset': '12345'}
+            raise github.urllib.error.HTTPError(req.full_url, 403, 'Forbidden', headers, None)
+        client = github.Client(token='t', opener=opener)
+        with self.assertRaisesRegex(github.RateLimited, 'GitHub rate limit reached'):
+            client.get('/path')
+
+    def test_get_secondary_rate_limited(self):
+        def opener(req, timeout):
+            headers = {'Retry-After': '60'}
+            raise github.urllib.error.HTTPError(req.full_url, 403, 'Forbidden', headers, None)
+        client = github.Client(token='t', opener=opener)
+        with self.assertRaisesRegex(github.RateLimited, 'secondary rate limit'):
+            client.get('/path')
+
+    def test_get_token_rejected(self):
+        def opener(req, timeout):
+            raise github.urllib.error.HTTPError(req.full_url, 401, 'Unauthorized', {}, None)
+        client = github.Client(token='t', opener=opener)
+        with self.assertRaises(github.TokenRejected):
+            client.get('/path')
+
+    def test_get_generic_error(self):
+        def opener(req, timeout):
+            raise github.urllib.error.HTTPError(req.full_url, 500, 'Internal Server Error', {}, None)
+        client = github.Client(token='t', opener=opener)
+        with self.assertRaisesRegex(github.GitHubError, 'GitHub API 500'):
+            client.get('/path')
+
+class GitHubSearchTest(unittest.TestCase):
+    def test_search_new_repos(self):
+        def opener(req, timeout):
+            if '/search/repositories' in req.full_url:
+                return io.BytesIO(json.dumps({'items': [
+                    {'full_name': 'a/x', 'stargazers_count': 100, 'created_at': '2026-11-01T00:00:00Z'}
+                ]}).encode())
+            return io.BytesIO(b'{}')
+        client = github.Client(token='t', opener=opener)
+        rows = github.search_new_repos(client)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['name'], 'a/x')
+        self.assertEqual(rows[0]['stars'], 100)
+
 class RecentStarsTest(unittest.TestCase):
     def test_reads_newest_pages_until_older_than_since(self):
         client = FakeClient(1000, NOW - timedelta(hours=1000))
@@ -166,6 +249,85 @@ class MeasureTest(unittest.TestCase):
 class ScoreTest(unittest.TestCase):
     def setUp(self):
         self.conn = db.connect(':memory:')
+
+    def test_novelty(self):
+        now = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        # < 30 days: 1.0
+        self.assertEqual(score.novelty((now - timedelta(days=29)).isoformat(), now), 1.0)
+        # 30 <= age < 90: (90 - age) / 60
+        self.assertAlmostEqual(score.novelty((now - timedelta(days=30)).isoformat(), now), 1.0)
+        self.assertAlmostEqual(score.novelty((now - timedelta(days=60)).isoformat(), now), 0.5)
+        self.assertAlmostEqual(score.novelty((now - timedelta(days=89)).isoformat(), now), 1/60)
+        # >= 90 days: 0.0
+        self.assertEqual(score.novelty((now - timedelta(days=90)).isoformat(), now), 0.0)
+        self.assertEqual(score.novelty((now - timedelta(days=100)).isoformat(), now), 0.0)
+        # None: 0.0
+        self.assertEqual(score.novelty(None, now), 0.0)
+
+    def test_flags_for(self):
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': 'rust', 'archived': 0, 'is_fork': 0}), [])
+        self.assertEqual(score.flags_for({'name': 'a/awesome-rust', 'topics': 'rust', 'archived': 0, 'is_fork': 0}), ['list'])
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': 'rust', 'archived': 0, 'is_fork': 0}), [])
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': 'learn-rust', 'archived': 0, 'is_fork': 0}), ['list'])
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': 'rust', 'archived': 1, 'is_fork': 0}), ['archived'])
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': 'rust', 'archived': 0, 'is_fork': 1}), ['fork'])
+        self.assertEqual(score.flags_for({'name': 'a/awesome-rust', 'topics': 'rust', 'archived': 1, 'is_fork': 1}), ['list', 'archived', 'fork'])
+        self.assertEqual(score.flags_for({'name': 'a/x', 'topics': None, 'archived': 0, 'is_fork': 0}), [])
+
+    def test_ratio(self):
+        self.assertEqual(score._ratio([(10, 2)]), 5.0)
+        self.assertEqual(score._ratio([(10, 2), (20, 3)]), 6.0)
+        self.assertIsNone(score._ratio([], min_sampled=1))
+        self.assertIsNone(score._ratio([(10, 0)], min_sampled=1))
+
+    def test_snapshot_velocity(self):
+        conn = db.connect(':memory:')
+        name = 'a/x'
+        now = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
+        # Too few snapshots
+        conn.execute('INSERT INTO snapshots VALUES (?, ?, ?)', (name, now.isoformat(), 100))
+        self.assertIsNone(score._snapshot_velocity(conn, name, 168, now))
+        # Enough snapshots, good span
+        conn.execute('INSERT INTO snapshots VALUES (?, ?, ?)', (name, (now - timedelta(hours=168)).isoformat(), 0))
+        self.assertEqual(score._snapshot_velocity(conn, name, 168, now), 100.0)
+        # Too short span
+        conn = db.connect(':memory:')
+        conn.execute('INSERT INTO snapshots VALUES (?, ?, ?)', (name, now.isoformat(), 100))
+        conn.execute('INSERT INTO snapshots VALUES (?, ?, ?)', (name, (now - timedelta(hours=10)).isoformat(), 50))
+        self.assertIsNone(score._snapshot_velocity(conn, name, 168, now))
+
+    def test_candidates(self):
+        conn = self.conn
+        # Busiest in sample
+        hour = db.hour_key(db.now_utc() - timedelta(days=1))
+        conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('a/busy', hour, 100))
+        conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('b/less-busy', hour, 10))
+        # New repos found by search (not yet measured)
+        db.upsert_repo(conn, repo('c/new', 1000))
+        # Already measured repo (should not be in search candidates)
+        db.upsert_repo(conn, repo('d/measured', 2000))
+        conn.execute('INSERT INTO measure_runs VALUES (?, ?, ?)', ('d/measured', 'now', 'all'))
+
+        candidates = score.candidates(conn, limit=10)
+        self.assertIn('a/busy', candidates)
+        self.assertIn('b/less-busy', candidates)
+        self.assertIn('c/new', candidates)
+        self.assertNotIn('d/measured', candidates)
+
+    def test_young_repo_scale(self):
+        conn = db.connect(':memory:')
+        # Set first loaded hour
+        conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", ('2026-11-01T00',))
+        # Repo created after first loaded hour
+        db.upsert_repo(conn, repo('y/a', 100, created_days_ago=1))
+        conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('y/a', '2026-11-04T00', 10))
+        # 100 real / 10 sampled = 10.0
+        self.assertEqual(score._young_repo_scale(conn, {'y/a': repo('y/a', 100, created_days_ago=1)}, min_repos=1, min_sampled=1), 10.0)
+        # Not enough repos
+        self.assertIsNone(score._young_repo_scale(conn, {}, min_repos=2, min_sampled=1))
+        # No archive_hours
+        conn2 = db.connect(':memory:')
+        self.assertIsNone(score._young_repo_scale(conn2, {}))
 
     def test_breakout_beats_bigger_steady_repo(self):
         db.upsert_repo(self.conn, repo('new/rocket', 900, created_days_ago=10))
@@ -246,6 +408,53 @@ class ScoreTest(unittest.TestCase):
             add_measured(self.conn, n, [1] * 7 + [40] * 7)
         self.assertEqual([r['name'] for r in score.breakouts(self.conn, now=NOW)], ['new/a'])
 
+
+class MCPTest(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(':memory:')
+        self.original_connect = db.connect
+        db.connect = lambda path=None: self.conn
+
+    def tearDown(self):
+        db.connect = self.original_connect
+
+    def test_trending_tool(self):
+        db.upsert_repo(self.conn, repo('a/x', 100))
+        add_measured(self.conn, 'a/x', [10] * 14)
+        from hotrepos.mcp_server import trending as trending_tool
+        res = trending_tool(window='7d', limit=1)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]['name'], 'a/x')
+        with self.assertRaises(ValueError):
+            trending_tool(window='invalid')
+
+    def test_breakouts_tool(self):
+        db.upsert_repo(self.conn, repo('new/rocket', 900, created_days_ago=5))
+        add_measured(self.conn, 'new/rocket', [1] * 7 + [100] * 7)
+        from hotrepos.mcp_server import breakouts as breakouts_tool
+        res = breakouts_tool(limit=1)
+        self.assertEqual(len(res), 1)
+        self.assertEqual(res[0]['name'], 'new/rocket')
+
+    def test_explain_tool(self):
+        db.upsert_repo(self.conn, repo('a/x', 100))
+        add_measured(self.conn, 'a/x', [10] * 14)
+        from hotrepos.mcp_server import explain as explain_tool
+        res = explain_tool(repo='a/x')
+        self.assertEqual(res['repo'], 'a/x')
+        self.assertIsNotNone(res['metadata'])
+        self.assertTrue(any(s and s['name'] == 'a/x' for s in res['scores'].values()))
+        self.assertIn('source', res['stars_per_day'])
+
+        # Repo not found
+        res = explain_tool(repo='nope')
+        self.assertIn('error', res)
+
+    def test_data_status_tool(self):
+        from hotrepos.mcp_server import data_status as status_tool
+        res = status_tool()
+        self.assertIn('archive_hours', res)
+        self.assertIn('repos_known', res)
 
 class CLITest(unittest.TestCase):
     def test_top_prints_ranked_rows_from_the_db(self):
