@@ -423,6 +423,10 @@ class MCPTest(unittest.TestCase):
         self.conn = db.connect(':memory:')
         self.original_connect = db.connect
         db.connect = lambda path=None: self.conn
+        # The tools score the last days from the clock; the data sits around NOW, so the clock must be NOW too.
+        clock = mock.patch.object(db, 'now_utc', return_value=NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
 
     def tearDown(self):
         db.connect = self.original_connect
