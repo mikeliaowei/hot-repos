@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -28,9 +29,33 @@ class TokenRejected(GitHubError):
     pass
 
 
+def gh_cli_token():
+    """The token of the GitHub CLI's login (`gh auth token`), or None without gh or a gh login. It is read from gh's
+    own store (the OS keychain), so it works however hot-repos was started: a terminal opened before ~/.zshrc
+    changed, an editor, a scheduled job."""
+    try:
+        r = subprocess.run(['gh', 'auth', 'token'], capture_output=True, text=True, timeout=10,
+                           stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def default_token():
+    """(token, where it came from): GITHUB_TOKEN, then GH_TOKEN, then the gh CLI's login; (None, '') for none."""
+    for name in ('GITHUB_TOKEN', 'GH_TOKEN'):
+        if os.environ.get(name):
+            return os.environ[name], name
+    token = gh_cli_token()
+    return (token, 'gh') if token else (None, '')
+
+
 class Client:
     def __init__(self, token=None, opener=urllib.request.urlopen):
-        self.token = token if token is not None else os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+        if token is not None:
+            self.token, self.token_source = token, 'GITHUB_TOKEN'
+        else:
+            self.token, self.token_source = default_token()
         self.opener = opener
 
     def get(self, path, accept='application/vnd.github+json', **params):
@@ -51,6 +76,9 @@ class Client:
             if e.code in (403, 429) and (e.headers.get('Retry-After') or 'secondary rate limit' in message.lower()):
                 raise RateLimited(f'GitHub secondary rate limit: wait {e.headers.get("Retry-After") or "a few"} '
                                   'seconds and run again')
+            if e.code == 401 and self.token and self.token_source == 'gh':
+                raise TokenRejected('GitHub rejected the token of your gh CLI login (401 Bad credentials). Run '
+                                    '`gh auth login` again, or set GITHUB_TOKEN.')
             if e.code == 401 and self.token:
                 raise TokenRejected('GitHub rejected GITHUB_TOKEN (401 Bad credentials). Check that it was copied '
                                     'in full and has not expired, or unset it to run without a token.')
@@ -119,7 +147,8 @@ def measure(conn, client, names, lookback_days=14, max_pages=30, log=print):
     done = 0
     list_stargazers = bool(client.token)
     if not list_stargazers:
-        log('No GITHUB_TOKEN: saving star snapshots only (exact recent stars need a token).')
+        log('No GitHub token (set GITHUB_TOKEN or run `gh auth login`): saving star snapshots only '
+            '(exact recent stars need a token).')
     try:
         for name in names:
             item = client.get(f'/repos/{name}')
@@ -148,6 +177,6 @@ def measure(conn, client, names, lookback_days=14, max_pages=30, log=print):
             conn.commit()
             done += 1
     except RateLimited as e:
-        log(f'{e}; measured {done} of {len(names)} repos. Set GITHUB_TOKEN for 5,000 requests an hour.')
+        log(f'{e}; measured {done} of {len(names)} repos. Set GITHUB_TOKEN or run `gh auth login` for 5,000 requests an hour.')
     conn.commit()
     return done

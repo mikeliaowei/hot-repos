@@ -86,7 +86,8 @@ c[1].metric('Repos known', f"{status['repos_known']:,}")
 c[2].metric('Measured exactly', status['repos_measured'])
 c[3].metric('GitHub token', 'set' if status['github_token'] else 'not set')
 if not status['github_token']:
-    st.caption('Without a token the numbers are estimates. Set GITHUB_TOKEN and run `hotrepos update` for exact counts.')
+    st.caption('Without a token the numbers are estimates. Run `gh auth login` (or set GITHUB_TOKEN), then '
+               '`hotrepos update` for exact counts.')
 
 with st.sidebar:
     st.header('Filters')

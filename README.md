@@ -22,7 +22,7 @@ and some hours are missing), so its counts only pick candidates. Every number sa
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e .
-export GITHUB_TOKEN=github_pat_...   # optional but recommended; see "GitHub token" below
+gh auth login                        # optional but recommended; see "GitHub token" below
 .venv/bin/hotrepos update            # GH Archive (7 days) + search + measure 150 candidates
 ```
 
@@ -33,7 +33,13 @@ with the time of each star, to signed-in requests (anonymous requests get `401`)
 limited to 60 an hour. With a token, one `update` gives exact 1-day and 7-day numbers (`source: measured`) and
 the limit is 5,000 requests an hour.
 
-**Create one (free, no permissions needed).** hot-repos only reads public data.
+**Easiest: sign in to the GitHub CLI.** With [`gh`](https://cli.github.com) installed, run `gh auth login`
+once. hot-repos asks `gh auth token` for the login's token whenever `GITHUB_TOKEN` and `GH_TOKEN` are not set.
+gh keeps it in the OS keychain, so it works however hot-repos is started (an old terminal, an editor, a scheduled
+job) and nothing goes into a plain-text file. If GitHub rejects it, run `gh auth login` again.
+
+**Or create a token (free, no permissions needed).** hot-repos only reads public data. `GITHUB_TOKEN` (then
+`GH_TOKEN`) wins over the gh login when set.
 
 1. Open https://github.com/settings/personal-access-tokens/new.
 2. Name it `hot-repos` and pick an expiry.
@@ -55,8 +61,9 @@ echo ${#GITHUB_TOKEN}                                    # prints the length (no
 before). An expired token shows `GitHub rejected GITHUB_TOKEN`. Create a new one and replace the line in
 `~/.zshrc`.
 
-**Programs read the token when they start.** A UI started before you set the token keeps showing
-"GitHub token: not set". Stop it (Ctrl+C) and run `hotrepos ui` again from a terminal that has the token.
+**Programs read `GITHUB_TOKEN` when they start.** A UI started from a terminal opened before you added the token
+to `~/.zshrc` keeps showing "GitHub token: not set" (unless gh is signed in). Stop it (Ctrl+C) and run
+`hotrepos ui` again from a new terminal, or use the gh login above.
 The MCP server only reads the local database, so it doesn't need the token.
 
 ## Scheduled updates

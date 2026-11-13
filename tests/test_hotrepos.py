@@ -4,11 +4,20 @@ import io
 import json
 import os
 import tempfile
+import subprocess
 import unittest
+from unittest import mock
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from hotrepos import cli, db, gharchive, github, score
+
+
+def setUpModule():
+    # Tests never read the developer's own gh login; TokenLookupTest patches it per test.
+    patch = mock.patch.object(github.subprocess, 'run', side_effect=FileNotFoundError('gh'))
+    patch.start()
+    unittest.addModuleCleanup(patch.stop)
 
 NOW = datetime(2026, 11, 5, 12, tzinfo=timezone.utc)
 
@@ -241,7 +250,7 @@ class MeasureTest(unittest.TestCase):
     def test_without_token_saves_only_a_snapshot(self):
         conn, api, out = self.run_measure(None)
         self.assertEqual(api.paths, ['/repos/a/x'])
-        self.assertIn('No GITHUB_TOKEN', out)
+        self.assertIn('No GitHub token', out)
         self.assertEqual(conn.execute('SELECT stars FROM snapshots').fetchone()[0], 5)
         self.assertEqual(conn.execute('SELECT COUNT(*) FROM measure_runs').fetchone()[0], 0)
 
@@ -481,6 +490,50 @@ class CLITest(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TokenLookupTest(unittest.TestCase):
+    def gh(self, stdout='gho_from_gh\n', code=0, missing=False):
+        calls = []
+
+        def run(argv, **kw):
+            calls.append(argv)
+            if missing:
+                raise FileNotFoundError('gh')
+            return subprocess.CompletedProcess(argv, code, stdout, '')
+        return calls, run
+
+    def client(self, env, run):
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(github.subprocess, 'run', run):
+            return github.Client()
+
+    def test_without_env_the_gh_cli_login_is_used(self):
+        calls, run = self.gh()
+        c = self.client({'PATH': os.environ.get('PATH', '')}, run)
+        self.assertEqual((c.token, c.token_source), ('gho_from_gh', 'gh'))
+        self.assertEqual(calls, [['gh', 'auth', 'token']])
+
+    def test_the_environment_wins_and_gh_is_not_asked(self):
+        calls, run = self.gh()
+        c = self.client({'GITHUB_TOKEN': 'env_tok'}, run)
+        self.assertEqual((c.token, c.token_source, calls), ('env_tok', 'GITHUB_TOKEN', []))
+        c = self.client({'GH_TOKEN': 'gh_env_tok'}, run)
+        self.assertEqual((c.token, c.token_source, calls), ('gh_env_tok', 'GH_TOKEN', []))
+
+    def test_no_gh_or_no_gh_login_means_no_token(self):
+        for kw in ({'missing': True}, {'code': 1, 'stdout': ''}):
+            _, run = self.gh(**kw)
+            c = self.client({}, run)
+            self.assertIsNone(c.token)
+
+    def test_a_rejected_gh_token_says_to_log_in_again(self):
+        def opener(req, timeout):
+            raise github.urllib.error.HTTPError(req.full_url, 401, 'Unauthorized', {}, None)
+        _, run = self.gh()
+        c = self.client({}, run)
+        c.opener = opener
+        with self.assertRaisesRegex(github.TokenRejected, 'gh auth login'):
+            c.get('/repos/a/x')
 
 
 class ErrorMessageTest(unittest.TestCase):
