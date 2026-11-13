@@ -13,10 +13,16 @@ and some hours are missing), so its counts only pick candidates. Every number sa
 
 | `source` | Meaning |
 |---|---|
-| `measured` | Exact, from stargazer timestamps (needs `GITHUB_TOKEN`) |
+| `measured` | Exact, from stargazer timestamps (needs a token: `gh auth login` or `GITHUB_TOKEN`) |
 | `snapshot` | The difference between two star counts taken over time |
 | `estimated` | GH Archive count scaled by the sample rate, learned from measured repos or, without a token, from repos created inside the loaded hours (all their stars fall in the sample window). In November 2026 the rate was about 1 in 69. |
 | `sampled` | Raw GH Archive count; nothing measured yet to scale it |
+
+**Which hours a window counts.** "Last 24 hours" and "last 7 days" end at the newest loaded GH Archive hour, not
+at the clock: when `hotrepos update` has not run for days, the numbers cover a full window of the data you have
+instead of a few hours of it. `top`, `breakouts` and the UI say which hours they count ("Last 7 days up to
+2026-11-13 02:00 UTC"), and warn when the data ends more than 6 hours ago or under 80% of the window's hours
+are loaded. In `--json` and over MCP each row has `window_end` (UTC hour, exclusive) and `window_hours_loaded`.
 
 ## Setup
 

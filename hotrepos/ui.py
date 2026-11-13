@@ -32,6 +32,11 @@ def table(rows, key):
     if not rows:
         st.info('Nothing here yet. Run `hotrepos update`, or loosen the filters.')
         return None
+    head, warning = score.window_note(rows[0]['window'], rows[0]['window_end'],
+                                     hours_loaded=rows[0]['window_hours_loaded'])
+    st.caption(head)
+    if warning:
+        st.warning(warning)
     df = pd.DataFrame([{
         'repo': r['name'], 'url': r['url'], 'stars gained': r['stars_gained'], 'source': r['source'],
         'acceleration': r['acceleration'] if r['stars_prev_window'] is not None else None,

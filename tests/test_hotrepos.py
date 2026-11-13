@@ -381,10 +381,39 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(rows['y/a']['stars_gained'], 3000)
 
     def test_too_few_young_repos_leaves_counts_sampled(self):
-        self.conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", (db.hour_key(NOW - timedelta(days=8)),))
+        for h in (NOW - timedelta(days=8), NOW - timedelta(days=1)):
+            self.conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", (db.hour_key(h),))
         db.upsert_repo(self.conn, repo('y/a', 3000, created_days_ago=3))
         self.conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('y/a', db.hour_key(NOW - timedelta(days=1)), 50))
         self.assertEqual(score.compute(self.conn, '7d', NOW)[0]['source'], 'sampled')
+
+    def test_windows_end_at_the_newest_loaded_hour_when_the_data_is_behind(self):
+        # GH Archive loaded for two weeks, but the last loaded hour is 5 days before now.
+        last = NOW - timedelta(days=5)
+        for h in db.hours_back(last + timedelta(hours=1), 336):
+            self.conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", (db.hour_key(h),))
+        self.conn.executemany('INSERT INTO sampled VALUES (?, ?, ?, 0)', [
+            ('a/x', db.hour_key(last - timedelta(days=3)), 40),   # this week of data
+            ('a/x', db.hour_key(last - timedelta(days=10)), 20),  # the week before
+        ])
+        r = score.compute(self.conn, '7d', NOW)[0]
+        self.assertEqual((r['stars_gained'], r['stars_prev_window'], r['acceleration']), (40, 20, 2.0))
+        self.assertEqual(r['window_end'], db.hour_key(last + timedelta(hours=1)))
+        self.assertEqual(score.data_end(self.conn, NOW), last + timedelta(hours=1))
+
+    def test_a_window_with_missing_hours_says_how_many_are_loaded(self):
+        for h in db.hours_back(NOW, 168)[:100]:  # the newest 100 of the 168 hours
+            self.conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", (db.hour_key(h),))
+        self.conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('a/x', db.hour_key(NOW - timedelta(hours=3)), 4))
+        r = score.compute(self.conn, '7d', NOW)[0]
+        self.assertEqual(r['window_hours_loaded'], 100)
+        head, warning = score.window_note('7d', r['window_end'], NOW, r['window_hours_loaded'])
+        self.assertEqual(warning, 'Only 100 of the 168 hours in this window have GH Archive data, so sampled and '
+                                  'estimated counts are low. Run `hotrepos update` to load the rest.')
+        self.assertEqual(score.window_note('7d', r['window_end'], NOW, 168), (head, ''))
+
+    def test_without_archive_data_windows_end_now(self):
+        self.assertEqual(score.data_end(self.conn, NOW), NOW)
 
     def test_sampled_acceleration_needs_the_previous_window_loaded(self):
         for h in db.hours_back(NOW, 336):
@@ -485,11 +514,38 @@ class CLITest(unittest.TestCase):
             with contextlib.redirect_stdout(out):
                 cli.main(['--db', path, 'top', '--limit', '5'])
             self.assertIn('1. new/rocket  +140 stars, x1.0 vs previous 7d  [Rust]', out.getvalue())
+            self.assertNotIn('hotrepos update', out.getvalue())  # exact counts only: nothing to warn about
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
                 cli.main(['--db', path, 'top', '--json'])
             self.assertEqual(json.loads(out.getvalue())[0]['source'], 'measured')
         os.environ.pop('HOTREPOS_DB', None)
+
+    def top(self, archive_end):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, 'h.db')
+            conn = db.connect(path)
+            for h in db.hours_back(archive_end, 168):
+                conn.execute("INSERT INTO archive_hours VALUES (?, 1, 'ok')", (db.hour_key(h),))
+            conn.execute('INSERT INTO sampled VALUES (?, ?, ?, 0)', ('a/x', db.hour_key(archive_end - timedelta(hours=5)), 4))
+            conn.commit()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cli.main(['--db', path, 'top'])
+        os.environ.pop('HOTREPOS_DB', None)
+        return out.getvalue()
+
+    def test_top_says_which_hours_it_counts_and_warns_when_the_data_is_old(self):
+        end = db.now_utc().replace(minute=0, second=0, microsecond=0) - timedelta(days=3)
+        out = self.top(end)
+        self.assertIn(f"Last 7 days up to {end.strftime('%Y-%m-%d %H:00')} UTC", out)
+        self.assertIn('The GH Archive data ends 3 days ago. Run `hotrepos update` for current numbers.', out)
+        self.assertIn('1. a/x  +4 stars (sampled)', out)
+
+    def test_fresh_data_has_no_warning(self):
+        out = self.top(db.now_utc().replace(minute=0, second=0, microsecond=0) - timedelta(hours=2))
+        self.assertIn('Last 7 days up to', out)
+        self.assertNotIn('hotrepos update', out)
 
 
 if __name__ == '__main__':

@@ -48,6 +48,10 @@ def print_rows(rows, as_json):
         return
     if not rows:
         print('No data yet. Run: hotrepos update')
+        return
+    head, warning = score.window_note(rows[0]['window'], rows[0]['window_end'],
+                                     hours_loaded=rows[0]['window_hours_loaded'])
+    print(head + (f'\n{warning}' if warning else '') + '\n')
     for i, r in enumerate(rows, 1):
         est = '' if r['source'] == 'measured' else f" ({r['source']})"
         prev = '' if r['stars_prev_window'] is None else f", x{r['acceleration']} vs previous {r['window']}"

@@ -76,10 +76,42 @@ def _young_repo_scale(conn, repos, min_repos=3, min_sampled=50):
     return _ratio(pairs, min_sampled) if len(pairs) >= min_repos else None
 
 
-def compute(conn, window='7d', now=None):
-    """Score every known repo for `window`. Returns dicts sorted by hot_score, best first."""
+WINDOW_NAMES = {'1d': 'Last 24 hours', '7d': 'Last 7 days'}
+# GH Archive publishes each hour about an hour later; data older than this is worth a warning.
+STALE_HOURS = 6
+
+
+def window_note(window, window_end, now=None, hours_loaded=None):
+    """(which hours a result counts, a warning when the data is old or has gaps or ''), for people reading it.
+    `hours_loaded`: how many of the window's hours have GH Archive data (None: not checked)."""
+    end = db.parse_hour(window_end)
+    behind = (now or db.now_utc()) - end
+    head = f"{WINDOW_NAMES[window]} up to {end.strftime('%Y-%m-%d %H:00')} UTC"
     hours = WINDOWS[window]
+    if hours_loaded is not None and hours_loaded < 0.8 * hours:
+        return head, (f'Only {hours_loaded} of the {hours} hours in this window have GH Archive data, so sampled and '
+                      'estimated counts are low. Run `hotrepos update` to load the rest.')
+    if behind <= timedelta(hours=STALE_HOURS):
+        return head, ''
+    age = f'{behind.days} days' if behind.days >= 2 else f'{int(behind.total_seconds() // 3600)} hours'
+    return head, f'The GH Archive data ends {age} ago. Run `hotrepos update` for current numbers.'
+
+
+def data_end(conn, now=None):
+    """Where the windows end: the end of the newest loaded GH Archive hour, never later than `now` (the clock, by
+    default). When `hotrepos update` has not run for days, a window ending at the clock would hold only the few
+    loaded hours, so its counts and the comparison with the previous window would be wrong. Without archive data,
+    the windows end at `now`."""
     now = (now or db.now_utc()).replace(minute=0, second=0, microsecond=0)
+    newest = conn.execute("SELECT MAX(hour) FROM archive_hours WHERE status = 'ok'").fetchone()[0]
+    return min(now, db.parse_hour(newest) + timedelta(hours=1)) if newest else now
+
+
+def compute(conn, window='7d', now=None):
+    """Score every known repo for the `window` that ends at data_end. Returns dicts sorted by hot_score, best
+    first; each has `window_end`, the hour the window ends at (UTC, exclusive)."""
+    hours = WINDOWS[window]
+    now = data_end(conn, now)
     start, prev_start = now - timedelta(hours=hours), now - timedelta(hours=2 * hours)
 
     sampled, sampled_prev = _sum(conn, 'sampled', start, now), _sum(conn, 'sampled', prev_start, start)
@@ -87,6 +119,10 @@ def compute(conn, window='7d', now=None):
     prev_loaded = conn.execute("SELECT COUNT(*) FROM archive_hours WHERE status = 'ok' AND hour >= ? AND hour < ?",
                                (db.hour_key(prev_start), db.hour_key(start))).fetchone()[0]
     prev_sampled_known = prev_loaded >= 0.8 * hours
+    loaded = conn.execute("SELECT COUNT(*) FROM archive_hours WHERE status = 'ok' AND hour >= ? AND hour < ?",
+                          (db.hour_key(start), db.hour_key(now))).fetchone()[0]
+    if not conn.execute("SELECT 1 FROM archive_hours WHERE status = 'ok' LIMIT 1").fetchone():
+        loaded = None  # no GH Archive data at all: only exact counts, nothing to be missing
     measured, measured_prev = _sum(conn, 'measured', start, now), _sum(conn, 'measured', prev_start, start)
     covered = {r['name']: r['covered_since'] for r in conn.execute('SELECT * FROM measure_runs')}
 
@@ -124,7 +160,8 @@ def compute(conn, window='7d', now=None):
             'novelty': WEIGHTS['novelty'] * nov,
         }
         results.append({
-            'name': name, 'url': f'https://github.com/{name}', 'window': window,
+            'name': name, 'url': f'https://github.com/{name}', 'window': window, 'window_end': db.hour_key(now),
+            'window_hours_loaded': loaded,
             'stars_gained': round(v), 'stars_prev_window': None if prev is None else round(prev),
             'acceleration': round(accel, 2), 'source': source,
             'total_stars': repo['stars'] if repo else None,
