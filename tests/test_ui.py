@@ -53,9 +53,9 @@ class UITest(unittest.TestCase):
         self.assertEqual((df.iloc[0]['repo'], df.iloc[0]['stars gained'], df.iloc[0]['source']),
                          ('new/rocket', 140, 'measured'))
         self.assertEqual(at.metric[2].value, '1')  # measured exactly
-        at.sidebar.selectbox[0].select('Rust').run()
+        at.selectbox(key="language").select('Rust').run()
         self.assertEqual(len(at.dataframe[0].value), 1)
-        at.sidebar.text_input[0].input('nope').run()
+        at.text_input(key="topic").input('nope').run()
         self.assertIn('Nothing here yet', at.info[0].value)
 
     def test_detail_view(self):

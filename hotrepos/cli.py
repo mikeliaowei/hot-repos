@@ -101,7 +101,30 @@ def cmd_ui(conn, a):
     subprocess.run([sys.executable, '-m', 'streamlit', 'run', app, '--server.address', '127.0.0.1',
                     '--server.port', str(a.port), '--browser.gatherUsageStats', 'false',
                     # headless skips Streamlit's first-run email prompt, which would block without a terminal
-                    '--server.headless', 'true'], check=False)
+                    '--server.headless', 'true', '--client.toolbarMode', 'viewer', *theme_flags()], check=False)
+
+
+# The UI's look. Passed as flags rather than a .streamlit/config.toml, which Streamlit only reads from the
+# directory `hotrepos ui` is run in. Colors follow the viewer's light or dark system setting.
+THEME = {
+    'primaryColor': '#f2542d', 'baseRadius': 'large', 'buttonRadius': 'full', 'showWidgetBorder': True,
+    'font': 'sans-serif', 'headingFontWeights': [700, 650, 600], 'metricValueFontWeight': 650,
+    'light.backgroundColor': '#fbfaf8', 'light.secondaryBackgroundColor': '#f2efea',
+    'light.textColor': '#1d1b19', 'light.borderColor': '#e4dfd7',
+    'dark.backgroundColor': '#121214', 'dark.secondaryBackgroundColor': '#1d1d21',
+    'dark.textColor': '#ecebe8', 'dark.borderColor': '#2e2e34',
+}
+
+
+def theme_flags():
+    flags = []
+    for key, value in THEME.items():
+        if isinstance(value, bool):
+            value = str(value).lower()
+        elif isinstance(value, list):
+            value = '[' + ','.join(map(str, value)) + ']'
+        flags += [f'--theme.{key}', str(value)]
+    return flags
 
 
 def parser():
