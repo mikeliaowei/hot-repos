@@ -151,6 +151,15 @@ class GitHubClientTest(unittest.TestCase):
         client = github.Client(token='t', opener=opener)
         self.assertEqual(client.get('/path'), {'foo': 'bar'})
 
+    def test_get_sends_configured_token(self):
+        token = 'test-' + 'credential'
+
+        def opener(req, timeout):
+            self.assertEqual(req.get_header('Authorization'), 'Bearer ' + token)
+            return io.BytesIO(b'{}')
+
+        github.Client(token=token, opener=opener).get('/path')
+
     def test_get_404(self):
         def opener(req, timeout):
             raise github.urllib.error.HTTPError(req.full_url, 404, 'Not Found', {}, None)
