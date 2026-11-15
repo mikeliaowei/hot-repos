@@ -34,7 +34,7 @@ def default_path():
 def connect(path=None):
     path = path or default_path()
     if path != ':memory:':
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)

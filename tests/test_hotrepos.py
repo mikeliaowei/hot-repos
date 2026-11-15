@@ -17,22 +17,33 @@ def event(kind, repo):
     return json.dumps({'type': kind, 'repo': {'name': repo}})
 
 
-def repo(name, stars, created_days_ago=400, topics='', **kw):
+def repo(name, stars, created_days_ago=400, topics='', now=NOW, **kw):
     return {'name': name, 'description': f'{name} desc', 'language': 'Rust', 'topics': topics,
-            'created_at': (NOW - timedelta(days=created_days_ago)).isoformat().replace('+00:00', 'Z'),
+            'created_at': (now - timedelta(days=created_days_ago)).isoformat().replace('+00:00', 'Z'),
             'stars': stars, 'forks': 0, 'homepage': None, 'archived': 0, 'is_fork': 0, 'updated_at': None, **kw}
 
 
-def add_measured(conn, name, per_day, days=14):
+def add_measured(conn, name, per_day, days=14, now=NOW):
     """per_day: stars per day for the last `days` days, oldest first; spread over noon of each day."""
     for i, n in enumerate(per_day):
-        hour = NOW - timedelta(days=days - i) + timedelta(hours=1)
+        hour = now - timedelta(days=days - i) + timedelta(hours=1)
         conn.execute('INSERT INTO measured VALUES (?, ?, ?)', (name, db.hour_key(hour), n))
     conn.execute('INSERT INTO measure_runs VALUES (?, ?, ?)',
-                 (name, NOW.isoformat(), db.hour_key(NOW - timedelta(days=days))))
+                 (name, now.isoformat(), db.hour_key(now - timedelta(days=days))))
 
 
 class DBTest(unittest.TestCase):
+    def test_connect_accepts_relative_database_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            previous = os.getcwd()
+            try:
+                os.chdir(d)
+                conn = db.connect('hotrepos.db')
+                conn.close()
+                self.assertTrue(os.path.isfile('hotrepos.db'))
+            finally:
+                os.chdir(previous)
+
     def test_hour_key_and_parse_hour(self):
         dt = datetime(2026, 11, 5, 14, 30, tzinfo=timezone.utc)
         key = db.hour_key(dt)
@@ -135,6 +146,7 @@ class FakeClient:
 class GitHubClientTest(unittest.TestCase):
     def test_get_success(self):
         def opener(req, timeout):
+            self.assertEqual(req.get_header('Authorization'), 'Bearer t')
             return io.BytesIO(json.dumps({'foo': 'bar'}).encode())
         client = github.Client(token='t', opener=opener)
         self.assertEqual(client.get('/path'), {'foo': 'bar'})
@@ -419,8 +431,9 @@ class MCPTest(unittest.TestCase):
         db.connect = self.original_connect
 
     def test_trending_tool(self):
-        db.upsert_repo(self.conn, repo('a/x', 100))
-        add_measured(self.conn, 'a/x', [10] * 14)
+        now = db.now_utc()
+        db.upsert_repo(self.conn, repo('a/x', 100, now=now))
+        add_measured(self.conn, 'a/x', [10] * 14, now=now)
         from hotrepos.mcp_server import trending as trending_tool
         res = trending_tool(window='7d', limit=1)
         self.assertEqual(len(res), 1)
@@ -429,16 +442,18 @@ class MCPTest(unittest.TestCase):
             trending_tool(window='invalid')
 
     def test_breakouts_tool(self):
-        db.upsert_repo(self.conn, repo('new/rocket', 900, created_days_ago=5))
-        add_measured(self.conn, 'new/rocket', [1] * 7 + [100] * 7)
+        now = db.now_utc()
+        db.upsert_repo(self.conn, repo('new/rocket', 900, created_days_ago=5, now=now))
+        add_measured(self.conn, 'new/rocket', [1] * 7 + [100] * 7, now=now)
         from hotrepos.mcp_server import breakouts as breakouts_tool
         res = breakouts_tool(limit=1)
         self.assertEqual(len(res), 1)
         self.assertEqual(res[0]['name'], 'new/rocket')
 
     def test_explain_tool(self):
-        db.upsert_repo(self.conn, repo('a/x', 100))
-        add_measured(self.conn, 'a/x', [10] * 14)
+        now = db.now_utc()
+        db.upsert_repo(self.conn, repo('a/x', 100, now=now))
+        add_measured(self.conn, 'a/x', [10] * 14, now=now)
         from hotrepos.mcp_server import explain as explain_tool
         res = explain_tool(repo='a/x')
         self.assertEqual(res['repo'], 'a/x')
